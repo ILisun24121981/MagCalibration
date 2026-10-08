@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mag-calibration"
+version = "1.0.0"
+description = "Изолированный десктопный модуль 3D-калибровки магнетометра для PyQt6"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+# Жестко прописываем зависимости, которые pip установит автоматически у хоста
+dependencies = [
+    "PyQt6>=6.4.0",
+    "pyqtgraph>=0.13.0",
+    "numpy>=1.22.0",
+    "scipy>=1.8.0",
+]
+
+[tool.setuptools]
+# Автоматический поиск пакетов внутри папки с исходным кодом
+packages = ["mag_calibration", "mag_calibration.controllers", "mag_calibration.models", "mag_calibration.models.managers", "mag_calibration.views"]
+
+[tool.setuptools.package-data]
+# ВАЖНО: Указываем setuptools обязательно упаковать файлы локализации внутрь .whl пакета
+"mag_calibration" = ["translations/*.qm"]
