@@ -15,7 +15,7 @@ import pyqtgraph.opengl as gl
 
 
 class CalibrationView(QDialog):
-    """Пассивный графический интерфейс для визуализации калибровки магнетометра in 3D."""
+    """Пассивный графический интерфейс для визуализации калибровки магнетометра в 3D."""
 
     start_clicked = pyqtSignal()
     save_clicked = pyqtSignal()
@@ -29,11 +29,24 @@ class CalibrationView(QDialog):
         self.setObjectName("MagCalibrationMainDialog")
         self.resize(1150, 820)
 
+        # Контрастная таблица стилей для всплывающего облака подсказок QToolTip
+        self.setStyleSheet("""
+            QToolTip {
+                background-color: #fff9db;
+                color: #000000;
+                border: 1px solid #ffec99;
+                border-radius: 4px;
+                padding: 5px;
+                font-size: 12px;
+            }
+        """)
+
         self.param_inputs = {}
         self.original_values = {}
         self.scatter_raw = None
         self.scatter_calibrated = None
         self._result_path = None
+        self._device_number_cache = "-"  # Кэш для динамического переключения языка
 
         self._init_localization_dictionaries()
         self._build_ui_layout()
@@ -63,7 +76,23 @@ class CalibrationView(QDialog):
                 "btn_save": "Сохранить профиль",
                 "btn_reset": "Восстановить профиль",
                 "btn_default": "Профиль по умолчанию",
-                "res_title": "\n📌 [РЕЗУЛЬТАТЫ РАСЧЕТА RANSAC / МНК]:"
+                "res_title": "\n📌 [РЕЗУЛЬТАТЫ РАСЧЕТА RANSAC / МНК]:",
+                "labels": {
+                    "f_scale": "Масштаб функции (f_scale)",
+                    "iqr_multiplier": "Множитель IQR",
+                    "loss_type": "Тип функции потерь",
+                    "tolerance": "Порог сходимости (ftol)",
+                    "ransac_iterations": "Итерации RANSAC",
+                    "ransac_threshold": "Порог RANSAC"
+                },
+                "tooltips": {
+                    "ransac_iterations": "Количество случайных подвыборок RANSAC.\nЧем больше значение, тем выше вероятность найти чистую сферу на зашумленных данных.",
+                    "ransac_threshold": "Максимальное геометрическое расстояние до эллипсоида, при котором точка признается чистой. Оптимально: 0.03 - 0.08.",
+                    "f_scale": "Масштаб перегиба робастной функции потерь (Huber/Cauchy). Влияет на устойчивость к остаточным выбросам.",
+                    "iqr_multiplier": "Множитель межквартильного размаха (IQR). Используется для предварительной отбраковки экстремальных всплесков.",
+                    "loss_type": "Тип робастной функции потерь для МНК М-оценок.\n• linear: классический МНК.\n• huber/cauchy/soft_l1: устойчивые режимы.",
+                    "tolerance": "Критерий остановки алгоритма (ftol). Оптимизатор завершает расчет, когда изменение шага становится меньше этого значения."
+                }
             },
             "English": {
                 "title": "Interactive 3D Magnetometer Calibration Module",
@@ -79,7 +108,23 @@ class CalibrationView(QDialog):
                 "btn_save": "Save Profile",
                 "btn_reset": "Restore Profile",
                 "btn_default": "Factory Defaults",
-                "res_title": "\n📌 [RANSAC / LSQ CALIBRATION RESULTS]:"
+                "res_title": "\n📌 [RANSAC / LSQ CALIBRATION RESULTS]:",
+                "labels": {
+                    "f_scale": "Function Scale (f_scale)",
+                    "iqr_multiplier": "IQR Multiplier",
+                    "loss_type": "Loss Function Type",
+                    "tolerance": "Convergence Tol (ftol)",
+                    "ransac_iterations": "RANSAC Iterations",
+                    "ransac_threshold": "RANSAC Threshold"
+                },
+                "tooltips": {
+                    "ransac_iterations": "Number of RANSAC random sub-samples.\nHigher values increase probability of finding the perfect sphere but take more time.",
+                    "ransac_threshold": "Maximum geometric distance to ellipsoid for a point to be considered an inlier. Optimal: 0.03 - 0.08.",
+                    "f_scale": "Soft scale parameter for robust loss function (Huber/Cauchy). Defines the outlier downweighting threshold.",
+                    "iqr_multiplier": "Interquartile Range (IQR) multiplier. Used for initial rough filtering of extreme measurement spikes.",
+                    "loss_type": "Type of robust loss function for non-linear LSQ M-estimators.\n• linear: standard LSQ.\n• huber/cauchy/soft_l1: robust modes.",
+                    "tolerance": "Optimization termination criteria (ftol). The algorithm stops when the residual change becomes smaller than this value."
+                }
             }
         }
 
@@ -100,7 +145,10 @@ class CalibrationView(QDialog):
             f"<b>{self.lp['device_lbl']}</b> <span style='color: #1A237E; font-weight: bold;'>-</span>")
         info_layout.addWidget(self.lbl_device)
         info_layout.addSpacing(40)
-        info_layout.addWidget(QLabel(f"<b>{self.lp['file_lbl']}</b>"))
+
+        self.lbl_file_title = QLabel(f"<b>{self.lp['file_lbl']}</b>")
+        info_layout.addWidget(self.lbl_file_title)
+
         self.lbl_file_link = QLabel("-")
         self.lbl_file_link.linkActivated.connect(self._open_file_folder)
         info_layout.addWidget(self.lbl_file_link)
@@ -188,38 +236,64 @@ class CalibrationView(QDialog):
             "QTextEdit { background-color: #000000; color: #00ff00; font-family: monospace; font-size: 12px; }")
         main_layout.addWidget(self.log_output, stretch=1)
 
-# mag_calibration/views/calibration_view.py — Часть 3 из 4
+    # mag_calibration/views/calibration_view.py — Часть 3 из 4
     def update_file_context(self, device_number: str, result_path: Path):
+        self._device_number_cache = device_number
         self._result_path = Path(result_path).resolve()
-        self.lbl_device.setText(f"<b>{self.lp['device_lbl']}</b> <span style='color: #1A237E; font-weight: bold; font-size: 15px;'>{device_number}</span>")
-        self.lbl_file_link.setText(f"<a href='#' style='color: #3498db; text-decoration: underline; font-weight: bold;'>{self._result_path.name}</a>")
+
+        self.lbl_device.setText(
+            f"<b>{self.lp['device_lbl']}</b> <span style='color: #1A237E; font-weight: bold; font-size: 15px;'>{self._device_number_cache}</span>")
+        self.lbl_file_title.setText(f"<b>{self.lp['file_lbl']}</b>")
+        self.lbl_file_link.setText(
+            f"<a href='#' style='color: #3498db; text-decoration: underline; font-weight: bold;'>{self._result_path.name}</a>")
 
     def _open_file_folder(self):
         if self._result_path and self._result_path.parent.exists():
             folder_path = self._result_path.parent
             import sys
-            if sys.platform == "win32": os.startfile(folder_path)
-            elif sys.platform == "darwin": subprocess.Popen(["open", folder_path])
-            else: subprocess.Popen(["xdg-open", folder_path])
+            if sys.platform == "win32":
+                os.startfile(folder_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder_path])
+            else:
+                subprocess.Popen(["xdg-open", folder_path])
 
     def setup_ui_language(self, lang: str = "Russian"):
         self.lp = self.loc.get(lang, self.loc["English"])
         self.setWindowTitle(self.lp["title"])
+
         self.radio_auto.setText(self.lp["mode_auto"])
         self.radio_manual.setText(self.lp["mode_manual"])
+
         self.btn_save.setText(self.lp["btn_save"])
         self.btn_reset.setText(self.lp["btn_reset"])
         self.btn_default.setText(self.lp["btn_default"])
         self.btn_continue.setText(self.lp["btn_continue"])
         self.btn_save_result.setText(self.lp["btn_save_res"])
 
+        if self._result_path:
+            self.update_file_context(self._device_number_cache, self._result_path)
+
+        if "Фильтрация" in self.log_output.toPlainText() or "filtering" in self.log_output.toPlainText() or not self.btn_continue.isVisible():
+            if hasattr(self, 'scatter_calibrated') and self.scatter_calibrated is not None:
+                self.setup_stage2_buttons_ui()
+            else:
+                self.setup_stage1_buttons_ui()
+
+        if self.param_inputs:
+            current_stage = 1 if "ransac_iterations" in self.param_inputs else 2
+            current_vals = {k: inp.text() for k, inp in self.param_inputs.items()}
+            self.generate_parameter_fields(current_vals, stage=current_stage)
+
     def setup_stage1_buttons_ui(self):
         self.btn_start.setText(self.lp["btn_filter"])
-        self.btn_start.setStyleSheet("QPushButton { background-color: #2da44e; color: white; font-weight: bold; font-size: 13px; border-radius: 6px; }")
+        self.btn_start.setStyleSheet(
+            "QPushButton { background-color: #2da44e; color: white; font-weight: bold; font-size: 13px; border-radius: 6px; }")
 
     def setup_stage2_buttons_ui(self):
         self.btn_start.setText(self.lp["btn_start_calib"])
-        self.btn_start.setStyleSheet("QPushButton { background-color: #e67e22; color: white; font-weight: bold; font-size: 13px; border-radius: 6px; }")
+        self.btn_start.setStyleSheet(
+            "QPushButton { background-color: #e67e22; color: white; font-weight: bold; font-size: 13px; border-radius: 6px; }")
 
     def _toggle_params_visibility(self):
         is_manual = self.radio_manual.isChecked()
@@ -236,19 +310,50 @@ class CalibrationView(QDialog):
             item = self.params_layout.takeAt(0)
             if item.widget() and item.widget() not in (self.btn_save, self.btn_reset, self.btn_default):
                 item.widget().deleteLater()
-        self.param_inputs.clear(); self.original_values.clear()
+            elif item.layout():
+                while item.layout().count():
+                    sub_item = item.layout().takeAt(0)
+                    if sub_item.widget():
+                        sub_item.widget().deleteLater()
+                item.layout().deleteLater()
 
-        target_keys = ("ransac_iterations", "ransac_threshold") if stage == 1 else ("f_scale", "iqr_multiplier", "loss_type", "tolerance")
+        self.param_inputs.clear();
+        self.original_values.clear()
+        target_keys = ("ransac_iterations", "ransac_threshold") if stage == 1 else ("f_scale", "iqr_multiplier",
+                                                                                    "loss_type", "tolerance")
 
         for key, value in algo_settings.items():
             if key not in target_keys: continue
-            lbl = QLabel(self.param_labels.get(key, key))
-            lbl.setStyleSheet("color: #d4d4d4; font-size: 11px; margin-top: 4px;")
-            self.params_layout.addWidget(lbl)
+
+            label_container = QHBoxLayout()
+            label_container.setSpacing(6)
+            label_container.setContentsMargins(0, 4, 0, 0)
+
+            field_name = self.lp.get("labels", {}).get(key, key)
+            lbl_title = QLabel(field_name)
+            lbl_title.setStyleSheet("color: #d4d4d4; font-size: 11px; font-weight: bold;")
+            label_container.addWidget(lbl_title)
+
+            lbl_help = QLabel("❓")
+            lbl_help.setCursor(QtCore.Qt.CursorShape.WhatsThisCursor)
+            lbl_help.setStyleSheet("color: #3498db; font-size: 12px; font-weight: bold; background: transparent;")
+
+            tooltip_msg = self.lp.get("tooltips", {}).get(key, "")
+            if tooltip_msg:
+                lbl_help.setToolTip(tooltip_msg)
+
+            label_container.addWidget(lbl_help)
+            label_container.addStretch()
+
             inp = QLineEdit(str(value))
-            inp.setStyleSheet("QLineEdit { background: #ffffff; color: #000000; border: 1px solid #555555; border-radius: 4px; padding: 4px; font-size: 12px; }")
+            inp.setStyleSheet(
+                "QLineEdit { background: #ffffff; color: #000000; border: 1px solid #555555; border-radius: 4px; padding: 4px; font-size: 12px; }")
+
+            self.params_layout.addLayout(label_container)
             self.params_layout.addWidget(inp)
-            self.param_inputs[key] = inp; self.original_values[key] = str(value)
+
+            self.param_inputs[key] = inp;
+            self.original_values[key] = str(value)
             inp.textChanged.connect(self._check_for_modifications)
 
         self.params_layout.addWidget(self.btn_save)
@@ -335,6 +440,7 @@ class CalibrationView(QDialog):
             c_out[:] = [1.0, 0.2, 0.2, 0.4]
             self.gl_widget.addItem(gl.GLScatterPlotItem(pos=scaled_out, color=c_out, size=3, pxMode=True))
 
+        # ИСПРАВЛЕНО: Безопасное поиндексное извлечение компонент для QVector3D камеры
         if len(in_pts) > 0:
             center = np.mean(scaled_in, axis=0)
             self.gl_widget.opts['center'] = QVector3D(float(center[0]), float(center[1]), float(center[2]))
@@ -346,7 +452,6 @@ class CalibrationView(QDialog):
                 self.gl_widget.removeItem(item)
 
         raw_pts = np.vstack([raw_data['x'], raw_data['y'], raw_data['z']]).T
-
         self.scale_factor = 15.0 / max(np.max(np.abs(raw_pts)), 1.0)
         scaled_raw = raw_pts * self.scale_factor
 
@@ -354,7 +459,6 @@ class CalibrationView(QDialog):
         mn_y, mx_y = np.min(raw_data['y']), np.max(raw_data['y'])
         mn_z, mx_z = np.min(raw_data['z']), np.max(raw_data['z'])
         span = max(mx_x - mn_x, mx_y - mn_y, mx_z - mn_z)
-
         grid_step = float((1.0 if (span / 6.0) / (10 ** math.floor(math.log10(span / 6.0))) < 1.5 else (
             2.0 if (span / 6.0) / (10 ** math.floor(math.log10(span / 6.0))) < 3.5 else (
                 5.0 if (span / 6.0) / (10 ** math.floor(math.log10(span / 6.0))) < 7.5 else 10.0))) * (
@@ -362,7 +466,6 @@ class CalibrationView(QDialog):
         s_step = max(0.1, min(grid_step * self.scale_factor, 30.0))
         grid_spacing_vector = QVector3D(s_step, s_step, s_step)
 
-        # Вычисляем центр масс облака точек для фокуса камеры
         if calibrated_data and ("inliers" in calibrated_data):
             in_pts = np.vstack(
                 [calibrated_data['inliers']['x'], calibrated_data['inliers']['y'], calibrated_data['inliers']['z']]).T
@@ -376,36 +479,29 @@ class CalibrationView(QDialog):
             all_displayed_pts = scaled_raw
             center = np.mean(scaled_raw, axis=0)
 
-        # Расчет длины осей с запасом 15%
         max_coord_val = np.max(np.abs(all_displayed_pts)) if len(all_displayed_pts) > 0 else 15.0
         axis_len = float(max_coord_val * 1.15)
 
-        # Чтобы сетка GLGridItem была кратна шагу и центрировалась по осям,
-        # задаем нечетное количество ячеек или явно компенсируем сдвиг.
-        # ИСПРАВЛЕНО: Задаем размер сетки, строго кратный шагу, делая количество линий нечетным.
+        # Выравнивание линий сетки: делаем количество делений нечетным
         grid_size = int(math.ceil(axis_len * 2 / s_step))
-        if grid_size % 2 == 0:
-            grid_size += 1
+        if grid_size % 2 == 0: grid_size += 1
         total_size = grid_size * s_step
 
-        grid_xy = gl.GLGridItem()
-        grid_xy.setSize(total_size, total_size, 0)
-        grid_xy.setSpacing(spacing=grid_spacing_vector)
+        grid_xy = gl.GLGridItem();
+        grid_xy.setSize(total_size, total_size, 0);
+        grid_xy.setSpacing(spacing=grid_spacing_vector);
         self.gl_widget.addItem(grid_xy)
-
-        grid_xz = gl.GLGridItem()
-        grid_xz.setSize(x=total_size, y=total_size, z=0)
-        grid_xz.setSpacing(spacing=grid_spacing_vector)
-        grid_xz.rotate(90, 1, 0, 0)
+        grid_xz = gl.GLGridItem();
+        grid_xz.setSize(x=total_size, y=total_size, z=0);
+        grid_xz.setSpacing(spacing=grid_spacing_vector);
+        grid_xz.rotate(90, 1, 0, 0);
         self.gl_widget.addItem(grid_xz)
-
-        grid_yz = gl.GLGridItem()
-        grid_yz.setSize(x=total_size, y=total_size, z=0)
-        grid_yz.setSpacing(spacing=grid_spacing_vector)
-        grid_yz.rotate(90, 0, 1, 0)
+        grid_yz = gl.GLGridItem();
+        grid_yz.setSize(x=total_size, y=total_size, z=0);
+        grid_yz.setSpacing(spacing=grid_spacing_vector);
+        grid_yz.rotate(90, 0, 1, 0);
         self.gl_widget.addItem(grid_yz)
 
-        # Отрисовка сплошных цветных осей координат (проходят строго через ноль)
         self.gl_widget.addItem(
             gl.GLLinePlotItem(pos=np.array([[-axis_len, 0, 0], [axis_len, 0, 0]]), color=(1.0, 0.2, 0.2, 0.9),
                               width=6.0, antialias=True))
@@ -416,27 +512,24 @@ class CalibrationView(QDialog):
             gl.GLLinePlotItem(pos=np.array([[0, 0, -axis_len], [0, 0, axis_len]]), color=(0.2, 0.2, 1.0, 0.9),
                               width=6.0, antialias=True))
 
-        # Вывод точек
         if in_pts is not None:
-            s_in = in_pts * self.scale_factor
+            s_in = in_pts * self.scale_factor;
             c_in = np.zeros((len(s_in), 4));
             c_in[:] = [0.2, 1.0, 0.2, 0.6]
-            self.scatter_calibrated = gl.GLScatterPlotItem(pos=s_in, color=c_in, size=3, pxMode=True)
+            self.scatter_calibrated = gl.GLScatterPlotItem(pos=s_in, color=c_in, size=3, pxMode=True);
             self.gl_widget.addItem(self.scatter_calibrated)
-
             if len(out_pts) > 0:
-                s_out = out_pts * self.scale_factor
+                s_out = out_pts * self.scale_factor;
                 c_out = np.zeros((len(s_out), 4));
                 c_out[:] = [1.0, 0.2, 0.2, 0.4]
-                scatter_cal_outliers = gl.GLScatterPlotItem(pos=s_out, color=c_out, size=3, pxMode=True)
-                self.gl_widget.addItem(scatter_cal_outliers)
+                self.gl_widget.addItem(gl.GLScatterPlotItem(pos=s_out, color=c_out, size=3, pxMode=True))
         else:
             c_raw = np.zeros((len(scaled_raw), 4));
             c_raw[:] = [1.0, 0.0, 0.0, 0.5]
-            self.scatter_raw = gl.GLScatterPlotItem(pos=scaled_raw, color=c_raw, size=3, pxMode=True)
+            self.scatter_raw = gl.GLScatterPlotItem(pos=scaled_raw, color=c_raw, size=3, pxMode=True);
             self.gl_widget.addItem(self.scatter_raw)
 
-        # Наведение фокуса камеры на центр облака точек
+        # ИСПРАВЛЕНО: Безопасное покомпонентное наведение камеры на центр
         if len(center) >= 3:
             self.gl_widget.opts['center'] = QVector3D(float(center[0]), float(center[1]), float(center[2]))
         else:
@@ -464,10 +557,8 @@ class CalibrationView(QDialog):
         self.scatter_calibrated = None
         if self.gl_widget:
             try:
-                self.gl_widget.setParent(None);
-                self.gl_widget.clear()
-                from PyQt6 import sip;
-                sip.delete(self.gl_widget)
+                self.gl_widget.setParent(None); self.gl_widget.clear(); from PyQt6 import sip; sip.delete(
+                    self.gl_widget)
             except Exception:
                 pass
             self.gl_widget = None

@@ -109,11 +109,12 @@ class CalibrationController(QObject):
             self.settings_manager.calibration_file_path = Path("")
             return self._run_interactive_file_selection()
 
-# mag_calibration/controllers/calibration_controller.py — Часть 3 из 4
+    # mag_calibration/controllers/calibration_controller.py — Часть 3 из 4
     def _save_calibration_config(self):
         try:
             self.settings_manager.save_calibration_settings(self.model.algo_settings, parent=self.view)
-            self.view.display_message("Новые параметры успешно сохранены." if self.settings_manager.current_lang == "Russian" else "New parameters successfully saved.")
+            self.view.display_message(
+                "Новые параметры успешно сохранены." if self.settings_manager.current_lang == "Russian" else "New parameters successfully saved.")
         except Exception as e:
             self.view.display_error(f"Не удалось сохранить конфигурацию ({e}).")
 
@@ -124,17 +125,23 @@ class CalibrationController(QObject):
     def start_application(self, raw_data_dict: dict):
         self.model.load_data(raw_data_dict)
         file_data = self.file_manager.read_json(self.settings_manager.calibration_file_path, self.view)
-        device_number = file_data.get("fileInfo", {}).get("device_number", "unknown").strip() if file_data else "unknown"
-        self.view.update_file_context(device_number=device_number, result_path=self.settings_manager.calibration_file_path)
+        device_number = file_data.get("fileInfo", {}).get("device_number",
+                                                          "unknown").strip() if file_data else "unknown"
 
         self.current_stage = 1
-        is_ru = self.settings_manager.current_lang == "Russian"
+        active_lang = self.settings_manager.current_lang
+        is_ru = active_lang == "Russian"
         msg_ready = "Приложение готово к фильтрации (Этап 1)." if is_ru else "Application ready for filtering (Stage 1)."
 
         self.view.set_calibration_mode_ui(self.model.algo_settings.get("calibration_type", "auto"))
+
+        # ЖЕСТКАЯ СИНХРОНИЗАЦИЯ: Переключаем локализацию графического окна на системный язык сессии
+        self.view.setup_ui_language(active_lang)
+        self.view.update_file_context(device_number=device_number,
+                                      result_path=self.settings_manager.calibration_file_path)
+
         self.view.generate_parameter_fields(self.model.algo_settings, stage=1)
         self.view.display_3d_plots(raw_data=self.model.raw_data, calibrated_data=None)
-        self.view.setup_stage1_buttons_ui()
 
         self.view.save_result_clicked.connect(self._on_save_result_clicked)
         self.view.continue_clicked.connect(self._on_continue_clicked)
@@ -143,7 +150,8 @@ class CalibrationController(QObject):
 
     def _on_start_clicked(self):
         if not self.view.validate_fields():
-            self.view.display_error("Действие отклонено! Заполните пустые поля:")
+            self.view.display_error(
+                "Действие отклонено! Заполните пустые поля:" if self.settings_manager.current_lang == "Russian" else "Action rejected! Fill in empty fields:")
             return
         current_ui_mode = self.view.get_selected_calibration_mode()
         self.model.algo_settings["calibration_type"] = current_ui_mode
@@ -160,7 +168,8 @@ class CalibrationController(QObject):
     def run_ransac_filtering_stage(self):
         self.view.btn_start.setEnabled(False)
         is_ru = self.settings_manager.current_lang == "Russian"
-        self.view.display_message("Запуск RANSAC-экспертизы аномалий..." if is_ru else "Running RANSAC anomaly filtering...")
+        self.view.display_message(
+            "Запуск RANSAC-экспертизы аномалий..." if is_ru else "Running RANSAC anomaly filtering...")
         QApplication.processEvents()
 
         filtered_plots_data = self.model.run_pass1_ransac()
@@ -168,10 +177,12 @@ class CalibrationController(QObject):
             self.view.btn_start.setEnabled(True)
             return
 
-        self.view.display_filtered_ransac_plots(inliers=filtered_plots_data["inliers"], outliers=filtered_plots_data["outliers"])
+        self.view.display_filtered_ransac_plots(inliers=filtered_plots_data["inliers"],
+                                                outliers=filtered_plots_data["outliers"])
         self.view.btn_start.setEnabled(True)
         self.view.btn_continue.setVisible(True)
-        self.view.display_message("Фильтрация завершена. Нажмите 'Продолжить' для перехода к расчету МНК." if is_ru else "Filtering completed. Click 'Continue'.")
+        self.view.display_message(
+            "Фильтрация завершена. Нажмите 'Продолжить' для перехода к расчету МНК." if is_ru else "Filtering completed. Click 'Continue' to proceed to GN-LSM.")
 
     # mag_calibration/controllers/calibration_controller.py — Часть 4 из 4
     def _on_continue_clicked(self):
@@ -180,7 +191,7 @@ class CalibrationController(QObject):
         self.view.generate_parameter_fields(self.model.algo_settings, stage=2)
         self.view.setup_stage2_buttons_ui()
         self.view.display_message(
-            "Интерфейс переведен на Этап 2 (МНК Гаусса-Ньютона)." if self.settings_manager.current_lang == "Russian" else "Interface switched to Stage 2.")
+            "Интерфейс переведен на Этап 2 (МНК Гаусса-Ньютона)." if self.settings_manager.current_lang == "Russian" else "Interface switched to Stage 2 (Gauss-Newton).")
 
     def run_gauss_newton_computation_stage(self):
         self.view.btn_start.setEnabled(False)
@@ -190,7 +201,7 @@ class CalibrationController(QObject):
 
         offsets, coefficients, rmse = self.model.run_pass2_gauss_newton()
         if rmse == -1.0:
-            self.view.display_error("[ОШИБКА]: Вычисления сорваны.")
+            self.view.display_error("[ОШИБКА]: Вычисления сорваны." if is_ru else "[ERROR]: Computation aborted.")
             self.view.btn_start.setEnabled(True)
             return
 
@@ -215,7 +226,6 @@ class CalibrationController(QObject):
         self.view.reset_modification_state()
 
     def _on_reset_clicked(self):
-        """ИСПРАВЛЕНО: Восстанавливает профиль с диска, сохраняя текущий активный этап."""
         self.settings_manager.ensure_default_files()
         self.settings_manager.load_settings()
         fresh_disk_config = self._load_raw_file_config_only()
@@ -223,10 +233,7 @@ class CalibrationController(QObject):
         self.model.algo_settings.update(fresh_disk_config)
         self.last_executed_parameters = fresh_disk_config.copy()
 
-        # Восстанавливаем значения в полях ввода
         self.view.reset_to_values(fresh_disk_config)
-
-        # Перегенерируем поля строго под ТЕКУЩИЙ этап оператора (без жесткого сброса на Stage 1)
         self.view.generate_parameter_fields(fresh_disk_config, stage=self.current_stage)
 
         if self.current_stage == 1:
@@ -240,22 +247,12 @@ class CalibrationController(QObject):
 
         is_ru = self.settings_manager.current_lang == "Russian"
         self.view.display_message(
-            f"Параметры Этапа {self.current_stage} восстановлены из файла конфигурации на диске." if is_ru else f"Stage {self.current_stage} parameters restored from disk.")
+            f"Параметры Этапа {self.current_stage} восстановлены из конфигурации на диске." if is_ru else f"Stage {self.current_stage} parameters restored from disk.")
 
     def _on_default_clicked(self):
-        """ИСПРАВЛЕНО: Заполняет поля заводскими дефолтами адаптивно, в зависимости от этапа."""
-        factory_defaults = {
-            "calibration_type": "auto",
-            "ransac_iterations": 800,
-            "ransac_threshold": 0.05,
-            "f_scale": 0.1,
-            "iqr_multiplier": 1.5,
-            "loss_type": "linear",
-            "tolerance": 1e-12,
-            "max_iterations": 5000
-        }
-
-        # Заполняем поля интерфейса эталонными значениями (измененные подсветятся желтым)
+        factory_defaults = {"calibration_type": "auto", "ransac_iterations": 800, "ransac_threshold": 0.05,
+                            "f_scale": 0.1, "iqr_multiplier": 1.5, "loss_type": "linear", "tolerance": 1e-12,
+                            "max_iterations": 5000}
         self.view.reset_to_values(factory_defaults)
 
         is_ru = self.settings_manager.current_lang == "Russian"
@@ -292,4 +289,3 @@ class CalibrationController(QObject):
         if self.model.calibration_offsets is not None and self.model.calibration_coefficients is not None:
             self._execute_json_save(self.model.calibration_offsets, self.model.calibration_coefficients,
                                     self.model.algo_settings.get("rmse", 0.0))
-

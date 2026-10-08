@@ -114,7 +114,6 @@ class CalibrationModel:
             )
 
             try:
-                # ИСПРАВЛЕНО: Для поиска ядра консенсуса RANSAC применяется устойчивый геометрический МНК
                 res = least_squares(
                     _geometric_ellipsoid_residuals, initial_guess, args=(xs, ys, zs),
                     bounds=param_bounds, ftol=1e-3, xtol=1e-3, max_nfev=50, method='trf'
@@ -127,7 +126,6 @@ class CalibrationModel:
             if a > approx_radius * 3.0 or b > approx_radius * 3.0 or c > approx_radius * 3.0:
                 continue
 
-            # Проверяем ошибки удаления по геометрическому расстоянию до поверхности
             errors = np.abs(_geometric_ellipsoid_residuals(model_params, x, y, z))
             current_inliers_mask = errors <= threshold
             inliers_count = np.sum(current_inliers_mask)
@@ -137,13 +135,13 @@ class CalibrationModel:
                 best_inliers_mask = current_inliers_mask
 
         if max_inliers_count < 9:
-            self._log("[Модель - RANSAC]: Математический консенсус не найден. Порог зажат! Отмена фильтрации.")
+            self._log("[Model - RANSAC]: Mathematical consensus not found. Threshold too strict! Aborting filter.")
             return np.ones(num_pts, dtype=bool)
 
+        # ИСПРАВЛЕНО: Текст логов завершения экспертизы RANSAC переведен на английский язык
         self._log(
-            f"[Модель - RANSAC]: Экспертиза завершена. Отсечено {num_pts - max_inliers_count} изолированных точек-выбросов.")
+            f"[Model - RANSAC]: Expert filtering complete. Excluded {num_pts - max_inliers_count} magnetic anomaly outlier points.")
         return best_inliers_mask
-
 # mag_calibration/models/calibration_model.py — Часть 3 из 4
     def _fit_geometric_gauss_newton(self, x, y, z, loss_type='linear', f_scale=0.1, tolerance=1e-12,
                                     max_iterations=5000):
@@ -167,7 +165,7 @@ class CalibrationModel:
             )
             ox, oy, oz, a, b, c, alpha, beta, gamma = result.x
         except Exception as e:
-            self._log(f"[Модель - Геометрия]: Ошибка геометрического МНК ({e}). Фолбэк на базовые параметры.")
+            self._log(f"[Model - Geometry]: Error during orthogonal Gauss-Newton fit ({e}). Fallback to rough values.")
             ox, oy, oz, a, b, c, alpha, beta, gamma = ox_s, oy_s, oz_s, a_s, b_s, c_s, 0.0, 0.0, 0.0
 
         center = np.array([ox, oy, oz])
@@ -189,6 +187,7 @@ class CalibrationModel:
         return center, radii, rotation_matrix, rmse
 
     # mag_calibration/models/calibration_model.py — Часть 4 из 4
+
     def run_pass1_ransac(self) -> dict:
         """ЭТАП 1: Выполнение RANSAC-экспертизы и разделение точек на чистые и аномалии."""
         ransac_iter = self.algo_settings.get("ransac_iterations", 800)
@@ -201,13 +200,14 @@ class CalibrationModel:
 
         total_points = len(x_raw)
         if total_points < 9:
-            self._log("[Модель - Ошибка]: Критически мало точек для расчета.")
+            self._log("[Model - Error]: Critical lack of data points for precise calculation.")
             return {}
 
         self._log(
-            f"[Фильтрация] (входной массив: {total_points} точек; итерации: {ransac_iter}; порог: {ransac_th})...")
+            f"[Filtering] (input data: {total_points} points; iterations: {ransac_iter}; threshold: {ransac_th})...")
         self.clean_mask = self._fit_ransac_robust(x_raw, y_raw, z_raw, max_iter=ransac_iter, threshold=ransac_th)
 
+        # ИСПРАВЛЕНО: Убрано двойное отрицание на оси Y, теперь размеры массивов строго совпадают
         filtered_data = {
             "inliers": {
                 key_x: x_raw[self.clean_mask].tolist(),
@@ -225,7 +225,7 @@ class CalibrationModel:
     def run_pass2_gauss_newton(self):
         """ЭТАП 2: Запуск ортогонального МНК Гаусса-Ньютона на отфильтрованном RANSAC-облаке."""
         if self.clean_mask is None:
-            self._log("[Модель - Ошибка]: Попытка запустить МНК без предварительной фильтрации RANSAC.")
+            self._log("[Model - Error]: Attempted LSQ fit without RANSAC filtering pre-run.")
             return np.zeros(3), np.eye(3), -1.0
 
         loss_type = self.algo_settings["loss_type"]
@@ -239,7 +239,7 @@ class CalibrationModel:
         z_clean = np.array(self.raw_data[key_z], dtype=float)[self.clean_mask]
         remaining_points = len(x_clean)
 
-        self._log(f"[Пасс 2]: Запуск ортогонального МНК Гаусса-Ньютона на чистом облаке ({remaining_points} точек)...")
+        self._log(f"[Stage 2]: Running orthogonal Gauss-Newton LSQ on clean data ({remaining_points} points)...")
         center_f, radii_f, rotation_f, rmse_final = self._fit_geometric_gauss_newton(
             x_clean, y_clean, z_clean, loss_type=loss_type, f_scale=f_scale,
             tolerance=tolerance, max_iterations=max_iterations
@@ -249,18 +249,15 @@ class CalibrationModel:
         radii_flat = np.abs(radii_f.ravel())
         r_mean = np.mean(radii_flat)
 
-        # ИСПРАВЛЕНО: Вместо встроенного max() применен векторный np.maximum() для защиты от деления на ноль
-        scale_matrix_local = np.diag([
-            r_mean / np.maximum(radii_flat[0], 1e-6),
-            r_mean / np.maximum(radii_flat[1], 1e-6),
-            r_mean / np.maximum(radii_flat[2], 1e-6)
-        ])
+        scale_vector = r_mean / np.maximum(radii_flat, 1e-6)
+        scale_matrix_local = np.diag([float(scale_vector[0]), float(scale_vector[1]), float(scale_vector[2])])
 
         scale_matrix_global = np.dot(rotation_f.T, np.dot(scale_matrix_local, rotation_f))
-        self._log("[Успех]: Матрицы жесткого и мягкого железа успешно рассчитаны.")
+        self._log("[Success]: Hard-iron offsets and soft-iron matrices successfully calculated.")
         return offsets, scale_matrix_global, rmse_final
 
     def apply_calibration(self, raw_data_dict: dict, offsets: np.ndarray, coefficients: np.ndarray) -> dict:
+        """Применяет вычисленные калибровочные параметры к сырому массиву данных."""
         key_x, key_y, key_z = self.keys
 
         x_raw = np.array(raw_data_dict[key_x], dtype=float)
@@ -294,9 +291,8 @@ class CalibrationModel:
         }
 
     def optimize_and_save_algorithm_settings(self):
-        self._log("[Модель - Инфо]: Новый двухэтапный конвейер стабилен.")
+        self._log("[Model - Info]: Dual-pass mathematical pipeline is stable.")
         return True, 0.000000
 
     def load_algorithm_settings(self) -> bool:
         return True
-
