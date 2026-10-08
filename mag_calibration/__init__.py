@@ -1,4 +1,3 @@
-# mag_calibration/__init__.py
 import sys
 import os
 import gc
@@ -6,41 +5,35 @@ from typing import Optional
 from PyQt6.QtCore import QTranslator
 from PyQt6.QtWidgets import QApplication, QWidget
 
-from mag_calibration.controllers.calibration_controller import CalibrationController
-
 _module_translator: Optional[QTranslator] = None
 
 __all__ = ["calibrate"]
 
 
 def calibrate(raw_data_dict: dict, parent_window: Optional[QWidget] = None) -> None:
-    """Высокоуровневая фасадная точка входа хост-приложения для запуска калибровки магнетометра.
-
-    Принимает словарь с сырыми массивами осей {'x': [...], 'y': [...], 'z': [...]}.
-    Гарантирует атомарную изоляцию ОЗУ хоста после закрытия окон.
-
-    :param raw_data_dict: Словарь с сырыми данными осей X, Y, Z.
-    :param parent_window: Ссылка на окно хост-приложения для обеспечения корректной иерархии окон.
-    """
+    """Высокоуровневая фасадная точка входа хост-приложения для запуска калибровки магнетометра."""
     global _module_translator
     app = QApplication.instance()
     controller = None
 
     try:
-        # 1. Аллокация ресурсов контроллера с привязкой к окну хоста
+        # ЛОКАЛЬНЫЙ (ЛЕНИВЫЙ) ИМПОРТ: Гарантирует чтение обновленного sys.modules
+        from mag_calibration.controllers.calibration_controller import CalibrationController
+
+        # 1. Аллокация ресурсов контроллера
         controller = CalibrationController(parent_window=parent_window)
         chosen_lang = controller.settings_manager.current_lang
 
-        # 2. Локализация встроенных системных диалогов Qt (Проводник, ввод текста)
+        # 2. Локализация встроенных системных диалогов Qt
         if app:
             if _module_translator is None:
                 _module_translator = QTranslator(app)
 
             module_dir = os.path.dirname(os.path.abspath(__file__))
-            if chosen_lang == "Russian":
-                translation_file = os.path.join(module_dir, "translations", "qtbase_ru.qm")
-            else:
-                translation_file = os.path.join(module_dir, "translations", "qtbase_en.qm")
+            translation_file = os.path.join(
+                module_dir, "translations",
+                "qtbase_ru.qm" if chosen_lang == "Russian" else "qtbase_en.qm"
+            )
 
             if os.path.exists(translation_file):
                 if _module_translator.load(translation_file):
@@ -68,10 +61,18 @@ def calibrate(raw_data_dict: dict, parent_window: Optional[QWidget] = None) -> N
             controller.shutdown_session()
             del controller
 
-        # Очистка циклов событий Qt от удаленных C++ объектов (через deleteLater)
+        # Прокачиваем оконные циклы и принудительно чистим кэш импортов
         if app:
             app.processEvents()
+            app.processEvents()
 
-        # Принудительный вызов циклической сборки мусора Python
+        # Выгружаем внутренние саб-пакеты самого плагина, чтобы они тоже пересоздавались с нуля
+        try:
+            for m in list(sys.modules.keys()):
+                if m.startswith('mag_calibration.'):
+                    del sys.modules[m]
+        except Exception:
+            pass
+
         gc.collect()
-        print("✨ [Магнетометр - Фасад] ОЗУ полностью освобождена. Управление возвращено хост-приложению.")
+        print("✨ [Магнетометр - Фасад] ОЗУ полностью освобождена. Память стерильна.")

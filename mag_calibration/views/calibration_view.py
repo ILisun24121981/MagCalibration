@@ -61,7 +61,7 @@ class CalibrationView(QDialog):
                 "mode_manual": "Ручной режим",
                 "btn_save": "Сохранить профиль",
                 "btn_reset": "Сбросить поля",
-                "res_title": "\n📌 [РЕЗУЛЬТАТЫ РАСЧЕТА SVD]:"
+                "res_title": "\n📌 [РЕЗУЛЬТАТЫ РАСЧЕТА RANSAC / МНК]:"
             },
             "English": {
                 "title": "Interactive 3D Magnetometer Calibration Module",
@@ -74,7 +74,7 @@ class CalibrationView(QDialog):
                 "mode_manual": "Manual Configuration",
                 "btn_save": "Save Profile",
                 "btn_reset": "Reset Fields",
-                "res_title": "\n📌 [SVD CALIBRATION RESULTS]:"
+                "res_title": "\n📌 [RANSAC / LSQ CALIBRATION RESULTS]:"
             }
         }
 
@@ -229,9 +229,10 @@ class CalibrationView(QDialog):
         panel_layout.addWidget(self.btn_save_result)
 
         panel_layout.addStretch()
-
         top_layout.addWidget(self.control_panel)
 
+        # ВОЗВРАЩЕНО К СТАНДАРТУ: Полностью локальное создание виджета
+        # При таком подходе принудительный sip.delete() в методе cleanup_resources сработает идеально
         self.gl_widget = gl.GLViewWidget()
         self.gl_widget.setCameraPosition(distance=40)
         top_layout.addWidget(self.gl_widget, stretch=4)
@@ -308,6 +309,15 @@ class CalibrationView(QDialog):
         self.params_layout.addWidget(self.btn_save)
         self.params_layout.addWidget(self.btn_reset)
         self._toggle_params_visibility()
+
+    def reset_modification_state(self):
+        """Сбрасывает флаги изменений в интерфейсе после успешного сохранения настроек алгоритма на диск."""
+        # Перезаписываем оригинальные значения текущими строками из полей ввода
+        for key, inp in self.param_inputs.items():
+            self.original_values[key] = inp.text().strip()
+
+        # Принудительно вызываем внутренний перерасчет стилей полей, чтобы убрать красную/розовую подсветку
+        self._check_for_modifications()
 
     def _check_for_modifications(self):
         has_changes = False
@@ -444,9 +454,7 @@ class CalibrationView(QDialog):
         self.gl_widget.opts['center'] = QVector3D(float(center[0]), float(center[1]), float(center[2]))
 
     def cleanup_resources(self):
-        """Полное и принудительное уничтожение графических шейдеров и объектов pyqtgraph
-        для предотвращения OpenGL краша 1281 при повторных запусках плагина.
-        """
+        """Полная, синхронная и изолированная зачистка всех OpenGL ресурсов модуля."""
         try:
             self.start_clicked.disconnect()
             self.save_clicked.disconnect()
@@ -456,67 +464,45 @@ class CalibrationView(QDialog):
         except Exception:
             pass
 
-        # Тотальная принудительная деаллокация шейдеров на уровне самих объектов pyqtgraph
-        for item in list(self.gl_widget.items):
-            try:
-                # Обнуляем скомпилированные шейдерные программы внутри элементов,
-                # чтобы заставить драйвер видеокарты забыть старые невалидные ID
-                if hasattr(item, 'shader'):
-                    item.shader = None
-                if hasattr(item, 'program'):
-                    if hasattr(item.program, 'program'):
-                        item.program.program = None
-                    item.program = None
-
-                # Удаляем элемент со сцены widget
-                self.gl_widget.removeItem(item)
-            except Exception:
-                pass
-
-        if self.scatter_raw:
-            try:
-                self.scatter_raw.shader = None
-            except Exception:
-                pass
-            self.scatter_raw = None
-
-        if self.scatter_calibrated:
-            try:
-                self.scatter_calibrated.shader = None
-            except Exception:
-                pass
-            self.scatter_calibrated = None
-
-        # Жесткий сброс статического кэша шейдеров pyqtgraph во всех возможных вариациях
-        try:
-            from pyqtgraph.opengl.shaders import ShaderProgram
-            import types
-
-            # Обнуляем любые внутренние словари хранения программ
-            for attr in dir(ShaderProgram):
-                if attr.startswith('_') and not attr.startswith('__'):
-                    val = getattr(ShaderProgram, attr)
-                    if isinstance(val, dict):
-                        val.clear()
-
-            # Очищаем кэш функций компиляции, если библиотека их закэшировала
-            if hasattr(ShaderProgram, 'load') and isinstance(ShaderProgram.load, types.MethodType):
+        # 1. Сброс программ у элементов сцены
+        if self.gl_widget:
+            for item in list(self.gl_widget.items):
                 try:
-                    ShaderProgram.load.__self__._programs.clear()
+                    if hasattr(item, 'shader'): item.shader = None
+                    if hasattr(item, 'program'): item.program = None
+                    self.gl_widget.removeItem(item)
                 except Exception:
                     pass
-        except Exception:
-            pass
 
-        # Полностью уничтожаем сам виджет OpenGL рендеринга и его контекст
+        self.scatter_raw = None
+        self.scatter_calibrated = None
+
+        # 2. Жесткое удаление C++ виджета из памяти через PyQt6.sip
         if self.gl_widget:
             try:
                 self.gl_widget.setParent(None)
                 self.gl_widget.clear()
-                self.gl_widget.deleteLater()
-            except Exception:
-                pass
+                from PyQt6 import sip
+                sip.delete(self.gl_widget)
+                print("🗑️ [Изоляция] Виджет GLViewWidget синхронно удален из C++ памяти.")
+            except Exception as e:
+                print(f"[Магнетометр] Ошибка жесткого удаления виджета: {e}")
             self.gl_widget = None
+
+        # 3. ТОТАЛЬНАЯ ВЫГРУЗКА МОДУЛЕЙ ИЗ ОЗУ ПРОЦЕССА
+        # Стираем pyqtgraph и OpenGL из sys.modules, чтобы гарантировать
+        # их полную повторную инициализацию при следующем запуске плагина.
+        try:
+            import sys
+            modules_to_unload = [
+                m for m in list(sys.modules.keys())
+                if m.startswith('pyqtgraph') or m.startswith('OpenGL')
+            ]
+            for module_name in modules_to_unload:
+                del sys.modules[module_name]
+            print(f"🧹 [Изоляция] Из ОЗУ выгружено {len(modules_to_unload)} модулей графического движка.")
+        except Exception as e:
+            print(f"[Магнетометр] Ошибка горячей выгрузки модулей: {e}")
 
         self.deleteLater()
 
