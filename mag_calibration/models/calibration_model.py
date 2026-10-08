@@ -1,4 +1,3 @@
-# mag_calibration/models/calibration_model.py — Часть 1 из 2
 import json
 import os
 import random
@@ -31,7 +30,7 @@ def _geometric_ellipsoid_residuals(params, x, y, z):
 
 
 def _algebraic_ellipsoid_residuals(params, x, y, z):
-    """Быстрый алгебраический расчет невязки повернутого эллипсоида для нужд RANSAC-прототипирования."""
+    """Быстрый алгебраический расчет невязки повернутого эллипсоида для нужд RANSAC."""
     ox, oy, oz, a, b, c, alpha, beta, gamma = params
     a, b, c = max(a, 1e-6), max(b, 1e-6), max(c, 1e-6)
     xc, yc, zc = x - ox, y - oy, z - oz
@@ -45,7 +44,6 @@ def _algebraic_ellipsoid_residuals(params, x, y, z):
 
     return (x_rot / a) ** 2 + (y_rot / b) ** 2 + (z_rot / c) ** 2 - 1.0
 
-
 class CalibrationModel:
     """Математическое ядро расчета калибровочных матриц магнетометра."""
 
@@ -56,6 +54,7 @@ class CalibrationModel:
 
         self.calibration_offsets = np.zeros(3)
         self.calibration_coefficients = np.eye(3)
+        self.clean_mask = None
 
         # Системный колбэк для пересылки логов напрямую во View через Контроллер
         self.logger = None
@@ -71,17 +70,15 @@ class CalibrationModel:
             "tolerance": 1e-12,
             "max_iterations": 5000
         }
-        # ИСПРАВЛЕНО: Привязка к локальному self.config_filename = "config.json" полностью удалена!
 
     def _log(self, message: str):
         """Внутренний хелпер: шлет лог в контроллер и принудительно обновляет UI хоста."""
         if self.logger:
             self.logger(message)
-            # Импортируем локально, чтобы модель оставалась независимой от глобальной области Qt при инициализации
             from PyQt6.QtWidgets import QApplication
             app = QApplication.instance()
             if app:
-                app.processEvents() # Мгновенно отрисовывает строку в текстовом окне логов
+                app.processEvents()
         else:
             print(message)
 
@@ -89,17 +86,13 @@ class CalibrationModel:
         self.raw_data = raw_dict
 
     def _fit_ransac_robust(self, x, y, z, max_iter=800, threshold=0.05):
-        """RANSAC-фильтрация данных.
-
-        Ищет устойчивое геометрическое ядро, полностью отсекая локальные помехи и наводки у металла.
-        """
+        """RANSAC-фильтрация данных."""
         num_pts = len(x)
         if num_pts < 9:
             return np.ones(num_pts, dtype=bool)
 
         best_inliers_mask = np.ones(num_pts, dtype=bool)
         max_inliers_count = -1
-
         approx_radius = (np.max(x) - np.min(x)) / 2.0
 
         for _ in range(max_iter):
@@ -145,21 +138,15 @@ class CalibrationModel:
         self._log(f"[Модель - RANSAC]: Отсечено {num_pts - max_inliers_count} точек аномалий магнитной среды.")
         return best_inliers_mask
 
-    # mag_calibration/models/calibration_model.py — Часть 2 из 2
-
     def _fit_geometric_gauss_newton(self, x, y, z, loss_type='linear', f_scale=0.1, tolerance=1e-12,
                                     max_iterations=5000):
-        """Числовой нелинейный МНК Гаусса-Ньютона (через алгоритм TRF).
-
-        Опирается на стабильную невязку повернутого эллипсоида для исключения расхождения осей.
-        """
+        """Числовой нелинейный МНК Гаусса-Ньютона (через алгоритм TRF)."""
         ox_s, oy_s, oz_s = np.median(x), np.median(y), np.median(z)
         a_s = max((np.max(x) - np.min(x)) / 2.0, 1.0)
         b_s = max((np.max(y) - np.min(y)) / 2.0, 1.0)
         c_s = max((np.max(z) - np.min(z)) / 2.0, 1.0)
 
         initial_guess = [ox_s, oy_s, oz_s, a_s, b_s, c_s, 0.0, 0.0, 0.0]
-
         param_bounds = (
             [-np.inf, -np.inf, -np.inf, 1e-3, 1e-3, 1e-3, -np.pi, -np.pi, -np.pi],
             [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.pi, np.pi, np.pi]
@@ -194,20 +181,10 @@ class CalibrationModel:
 
         return center, radii, rotation_matrix, rmse
 
-    def calculate_calibration_parameters_combined(self, f_scale=None, iqr_multiplier=None, loss_type=None):
-        """ГЛАВНЫЙ МЕТОД КОНВЕЙЕРА: Связка RANSAC (Пасс 1) + Стабильный МНК (Пасс 2).
-
-        Универсально отрабатывает как авто-конвейер, так и ручные параметры из полей интерфейса.
-        """
-        if loss_type is None:
-            loss_type = self.algo_settings["loss_type"]
-        if f_scale is None:
-            f_scale = self.algo_settings["f_scale"]
-
+    def run_pass1_ransac(self) -> dict:
+        """ЭТАП 1: Выполнение RANSAC-экспертизы и разделение точек на чистые и аномалии."""
         ransac_iter = self.algo_settings.get("ransac_iterations", 800)
         ransac_th = self.algo_settings.get("ransac_threshold", 0.05)
-        tolerance = self.algo_settings["tolerance"]
-        max_iterations = self.algo_settings["max_iterations"]
 
         key_x, key_y, key_z = self.keys
         x_raw = np.array(self.raw_data[key_x], dtype=float)
@@ -216,15 +193,41 @@ class CalibrationModel:
 
         total_points = len(x_raw)
         if total_points < 9:
-            self._log("[Модель - Ошибка]: Критически мало точек для прецизионного геометрического расчета.")
-            return np.zeros(3), np.eye(3), -1.0
+            self._log("[Модель - Ошибка]: Критически мало точек для расчета.")
+            return {}
 
         self._log(f"[Пасс 1]: Запуск RANSAC-экспертизы (входной массив: {total_points} точек)...")
-        clean_mask = self._fit_ransac_robust(x_raw, y_raw, z_raw, max_iter=ransac_iter, threshold=ransac_th)
+        self.clean_mask = self._fit_ransac_robust(x_raw, y_raw, z_raw, max_iter=ransac_iter, threshold=ransac_th)
 
-        x_clean = x_raw[clean_mask]
-        y_clean = y_raw[clean_mask]
-        z_clean = z_raw[clean_mask]
+        filtered_data = {
+            "inliers": {
+                key_x: x_raw[self.clean_mask].tolist(),
+                key_y: y_raw[self.clean_mask].tolist(),
+                key_z: z_raw[self.clean_mask].tolist()
+            },
+            "outliers": {
+                key_x: x_raw[~self.clean_mask].tolist(),
+                key_y: y_raw[~self.clean_mask].tolist(),
+                key_z: z_raw[~self.clean_mask].tolist()
+            }
+        }
+        return filtered_data
+
+    def run_pass2_gauss_newton(self):
+        """ЭТАП 2: Запуск ортогонального МНК Гаусса-Ньютона на отфильтрованном RANSAC-облаке."""
+        if self.clean_mask is None:
+            self._log("[Модель - Ошибка]: Попытка запустить МНК без предварительной фильтрации RANSAC.")
+            return np.zeros(3), np.eye(3), -1.0
+
+        loss_type = self.algo_settings["loss_type"]
+        f_scale = self.algo_settings["f_scale"]
+        tolerance = self.algo_settings["tolerance"]
+        max_iterations = self.algo_settings["max_iterations"]
+
+        key_x, key_y, key_z = self.keys
+        x_clean = np.array(self.raw_data[key_x], dtype=float)[self.clean_mask]
+        y_clean = np.array(self.raw_data[key_y], dtype=float)[self.clean_mask]
+        z_clean = np.array(self.raw_data[key_z], dtype=float)[self.clean_mask]
         remaining_points = len(x_clean)
 
         self._log(f"[Пасс 2]: Запуск ортогонального МНК Гаусса-Ньютона на чистом облаке ({remaining_points} точек)...")
@@ -244,14 +247,11 @@ class CalibrationModel:
         ])
 
         scale_matrix_global = np.dot(rotation_f.T, np.dot(scale_matrix_local, rotation_f))
-
         self._log("[Успех]: Матрицы жесткого и мягкого железа успешно рассчитаны.")
         return offsets, scale_matrix_global, rmse_final
 
     def apply_calibration(self, raw_data_dict: dict, offsets: np.ndarray, coefficients: np.ndarray) -> dict:
-        """Применяет вычисленные калибровочные параметры к сырому массиву данных."""
         key_x, key_y, key_z = self.keys
-
         x_raw = np.array(raw_data_dict[key_x], dtype=float)
         y_raw = np.array(raw_data_dict[key_y], dtype=float)
         z_raw = np.array(raw_data_dict[key_z], dtype=float)
@@ -267,14 +267,8 @@ class CalibrationModel:
         }
 
     def optimize_and_save_algorithm_settings(self):
-        """ФУНКЦИЯ-СОВМЕСТИМОСТЬ: Имитирует успешный авто-подбор параметров алгоритма.
-
-        ИСПРАВЛЕНО: Избыточная локальная запись удалена. Метод возвращает флаг
-        успешности, перекладывая сохранение на единую экосистему менеджеров.
-        """
-        self._log("[Модель - Инфо]: Новый конвейер RANSAC+Геометрия стабилен. Пропуск Grid Search.")
+        self._log("[Модель - Инфо]: Новый двухэтапный конвейер стабилен.")
         return True, 0.000000
 
     def load_algorithm_settings(self) -> bool:
-        """Заглушка-совместимость. Больше не используется, так как параметры читает SettingsManager."""
         return True
