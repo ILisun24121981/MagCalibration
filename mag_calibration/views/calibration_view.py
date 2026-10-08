@@ -340,12 +340,13 @@ class CalibrationView(QDialog):
             self.gl_widget.opts['center'] = QVector3D(float(center[0]), float(center[1]), float(center[2]))
 
     def display_3d_plots(self, raw_data, calibrated_data=None):
+        """Отрисовывает 3D графики магнитной среды с жестко выровненной сеткой строго по осям (0,0,0)."""
         for item in list(self.gl_widget.items):
-            if isinstance(item, (gl.GLScatterPlotItem, gl.GLGridItem, gl.GLTextItem,
-                                 gl.GLLinePlotItem)): self.gl_widget.removeItem(item)
+            if isinstance(item, (gl.GLScatterPlotItem, gl.GLGridItem, gl.GLTextItem, gl.GLLinePlotItem)):
+                self.gl_widget.removeItem(item)
+
         raw_pts = np.vstack([raw_data['x'], raw_data['y'], raw_data['z']]).T
-        cal_pts = np.vstack([calibrated_data['x'], calibrated_data['y'], calibrated_data['z']]).T if (
-                    calibrated_data and any(calibrated_data[k] for k in ('x', 'y', 'z'))) else None
+
         self.scale_factor = 15.0 / max(np.max(np.abs(raw_pts)), 1.0)
         scaled_raw = raw_pts * self.scale_factor
 
@@ -353,6 +354,7 @@ class CalibrationView(QDialog):
         mn_y, mx_y = np.min(raw_data['y']), np.max(raw_data['y'])
         mn_z, mx_z = np.min(raw_data['z']), np.max(raw_data['z'])
         span = max(mx_x - mn_x, mx_y - mn_y, mx_z - mn_z)
+
         grid_step = float((1.0 if (span / 6.0) / (10 ** math.floor(math.log10(span / 6.0))) < 1.5 else (
             2.0 if (span / 6.0) / (10 ** math.floor(math.log10(span / 6.0))) < 3.5 else (
                 5.0 if (span / 6.0) / (10 ** math.floor(math.log10(span / 6.0))) < 7.5 else 10.0))) * (
@@ -360,49 +362,85 @@ class CalibrationView(QDialog):
         s_step = max(0.1, min(grid_step * self.scale_factor, 30.0))
         grid_spacing_vector = QVector3D(s_step, s_step, s_step)
 
-        grid_xy = gl.GLGridItem();
-        grid_xy.setSize(40, 40, 0);
-        grid_xy.setSpacing(spacing=grid_spacing_vector);
+        # Вычисляем центр масс облака точек для фокуса камеры
+        if calibrated_data and ("inliers" in calibrated_data):
+            in_pts = np.vstack(
+                [calibrated_data['inliers']['x'], calibrated_data['inliers']['y'], calibrated_data['inliers']['z']]).T
+            out_pts = np.vstack([calibrated_data['outliers']['x'], calibrated_data['outliers']['y'],
+                                 calibrated_data['outliers']['z']]).T
+            all_displayed_pts = np.vstack([in_pts, out_pts]) * self.scale_factor if len(
+                out_pts) > 0 else in_pts * self.scale_factor
+            center = np.mean(in_pts * self.scale_factor, axis=0) if len(in_pts) > 0 else np.zeros(3)
+        else:
+            in_pts, out_pts = None, None
+            all_displayed_pts = scaled_raw
+            center = np.mean(scaled_raw, axis=0)
+
+        # Расчет длины осей с запасом 15%
+        max_coord_val = np.max(np.abs(all_displayed_pts)) if len(all_displayed_pts) > 0 else 15.0
+        axis_len = float(max_coord_val * 1.15)
+
+        # Чтобы сетка GLGridItem была кратна шагу и центрировалась по осям,
+        # задаем нечетное количество ячеек или явно компенсируем сдвиг.
+        # ИСПРАВЛЕНО: Задаем размер сетки, строго кратный шагу, делая количество линий нечетным.
+        grid_size = int(math.ceil(axis_len * 2 / s_step))
+        if grid_size % 2 == 0:
+            grid_size += 1
+        total_size = grid_size * s_step
+
+        grid_xy = gl.GLGridItem()
+        grid_xy.setSize(total_size, total_size, 0)
+        grid_xy.setSpacing(spacing=grid_spacing_vector)
         self.gl_widget.addItem(grid_xy)
-        grid_xz = gl.GLGridItem();
-        grid_xz.setSize(x=40, y=40, z=0);
-        grid_xz.setSpacing(spacing=grid_spacing_vector);
-        grid_xz.rotate(90, 1, 0, 0);
+
+        grid_xz = gl.GLGridItem()
+        grid_xz.setSize(x=total_size, y=total_size, z=0)
+        grid_xz.setSpacing(spacing=grid_spacing_vector)
+        grid_xz.rotate(90, 1, 0, 0)
         self.gl_widget.addItem(grid_xz)
-        grid_yz = gl.GLGridItem();
-        grid_yz.setSize(x=40, y=40, z=0);
-        grid_yz.setSpacing(spacing=grid_spacing_vector);
-        grid_yz.rotate(90, 0, 1, 0);
+
+        grid_yz = gl.GLGridItem()
+        grid_yz.setSize(x=total_size, y=total_size, z=0)
+        grid_yz.setSpacing(spacing=grid_spacing_vector)
+        grid_yz.rotate(90, 0, 1, 0)
         self.gl_widget.addItem(grid_yz)
 
-        st_x, end_x = min(0.0, mn_x * self.scale_factor - 2 * s_step), max(0.0, mx_x * self.scale_factor + 2 * s_step)
-        st_y, end_y = min(0.0, mn_y * self.scale_factor - 2 * s_step), max(0.0, mx_y * self.scale_factor + 2 * s_step)
-        st_z, end_z = min(0.0, mn_z * self.scale_factor - 2 * s_step), max(0.0, mx_z * self.scale_factor + 2 * s_step)
+        # Отрисовка сплошных цветных осей координат (проходят строго через ноль)
         self.gl_widget.addItem(
-            gl.GLLinePlotItem(pos=np.array([[st_x, 0, 0], [end_x, 0, 0]]), color=(1.0, 0.2, 0.2, 0.9), width=6.0,
-                              antialias=True))
+            gl.GLLinePlotItem(pos=np.array([[-axis_len, 0, 0], [axis_len, 0, 0]]), color=(1.0, 0.2, 0.2, 0.9),
+                              width=6.0, antialias=True))
         self.gl_widget.addItem(
-            gl.GLLinePlotItem(pos=np.array([[0, st_y, 0], [0, end_y, 0]]), color=(0.2, 1.0, 0.2, 0.9), width=6.0,
-                              antialias=True))
+            gl.GLLinePlotItem(pos=np.array([[0, -axis_len, 0], [0, axis_len, 0]]), color=(0.2, 1.0, 0.2, 0.9),
+                              width=6.0, antialias=True))
         self.gl_widget.addItem(
-            gl.GLLinePlotItem(pos=np.array([[0, 0, st_z], [0, 0, end_z]]), color=(0.2, 0.2, 1.0, 0.9), width=6.0,
-                              antialias=True))
+            gl.GLLinePlotItem(pos=np.array([[0, 0, -axis_len], [0, 0, axis_len]]), color=(0.2, 0.2, 1.0, 0.9),
+                              width=6.0, antialias=True))
 
-        c_raw = np.zeros((len(scaled_raw), 4));
-        c_raw[:] = [1, 0, 0, 0.5]
-        self.scatter_raw = gl.GLScatterPlotItem(pos=scaled_raw, color=c_raw, size=3, pxMode=True);
-        self.gl_widget.addItem(self.scatter_raw)
-
-        if cal_pts is not None:
-            s_cal = cal_pts * self.scale_factor;
-            c_cal = np.zeros((len(s_cal), 4));
-            c_cal[:] = [0, 1, 0, 0.6]
-            self.scatter_calibrated = gl.GLScatterPlotItem(pos=s_cal, color=c_cal, size=3, pxMode=True);
+        # Вывод точек
+        if in_pts is not None:
+            s_in = in_pts * self.scale_factor
+            c_in = np.zeros((len(s_in), 4));
+            c_in[:] = [0.2, 1.0, 0.2, 0.6]
+            self.scatter_calibrated = gl.GLScatterPlotItem(pos=s_in, color=c_in, size=3, pxMode=True)
             self.gl_widget.addItem(self.scatter_calibrated)
-            center = np.mean(s_cal, axis=0)
+
+            if len(out_pts) > 0:
+                s_out = out_pts * self.scale_factor
+                c_out = np.zeros((len(s_out), 4));
+                c_out[:] = [1.0, 0.2, 0.2, 0.4]
+                scatter_cal_outliers = gl.GLScatterPlotItem(pos=s_out, color=c_out, size=3, pxMode=True)
+                self.gl_widget.addItem(scatter_cal_outliers)
         else:
-            center = np.mean(scaled_raw, axis=0)
-        self.gl_widget.opts['center'] = QVector3D(float(center[0]), float(center[1]), float(center[2]))
+            c_raw = np.zeros((len(scaled_raw), 4));
+            c_raw[:] = [1.0, 0.0, 0.0, 0.5]
+            self.scatter_raw = gl.GLScatterPlotItem(pos=scaled_raw, color=c_raw, size=3, pxMode=True)
+            self.gl_widget.addItem(self.scatter_raw)
+
+        # Наведение фокуса камеры на центр облака точек
+        if len(center) >= 3:
+            self.gl_widget.opts['center'] = QVector3D(float(center[0]), float(center[1]), float(center[2]))
+        else:
+            self.gl_widget.opts['center'] = QVector3D(0.0, 0.0, 0.0)
 
     def cleanup_resources(self):
         try:

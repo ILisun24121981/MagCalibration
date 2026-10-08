@@ -1,3 +1,4 @@
+# mag_calibration/models/calibration_model.py — Часть 1 из 4
 import json
 import os
 import random
@@ -44,6 +45,8 @@ def _algebraic_ellipsoid_residuals(params, x, y, z):
 
     return (x_rot / a) ** 2 + (y_rot / b) ** 2 + (z_rot / c) ** 2 - 1.0
 
+
+# mag_calibration/models/calibration_model.py — Часть 2 из 4
 class CalibrationModel:
     """Математическое ядро расчета калибровочных матриц магнетометра."""
 
@@ -86,13 +89,15 @@ class CalibrationModel:
         self.raw_data = raw_dict
 
     def _fit_ransac_robust(self, x, y, z, max_iter=800, threshold=0.05):
-        """RANSAC-фильтрация данных."""
+        """Стабильная RANSAC-фильтрация на основе строгой геометрической невязки."""
         num_pts = len(x)
         if num_pts < 9:
             return np.ones(num_pts, dtype=bool)
 
         best_inliers_mask = np.ones(num_pts, dtype=bool)
         max_inliers_count = -1
+
+        approx_center = np.array([np.median(x), np.median(y), np.median(z)])
         approx_radius = (np.max(x) - np.min(x)) / 2.0
 
         for _ in range(max_iter):
@@ -100,9 +105,7 @@ class CalibrationModel:
             xs, ys, zs = x[indices], y[indices], z[indices]
 
             ox_s, oy_s, oz_s = np.median(xs), np.median(ys), np.median(zs)
-            a_s = max((np.max(xs) - np.min(xs)) / 2.0, 1.0)
-            b_s = max((np.max(ys) - np.min(ys)) / 2.0, 1.0)
-            c_s = max((np.max(zs) - np.min(zs)) / 2.0, 1.0)
+            a_s, b_s, c_s = approx_radius, approx_radius, approx_radius
 
             initial_guess = [ox_s, oy_s, oz_s, a_s, b_s, c_s, 0.0, 0.0, 0.0]
             param_bounds = (
@@ -111,19 +114,21 @@ class CalibrationModel:
             )
 
             try:
+                # ИСПРАВЛЕНО: Для поиска ядра консенсуса RANSAC применяется устойчивый геометрический МНК
                 res = least_squares(
-                    _algebraic_ellipsoid_residuals, initial_guess, args=(xs, ys, zs),
-                    bounds=param_bounds, ftol=1e-4, xtol=1e-4, max_nfev=100, method='trf'
+                    _geometric_ellipsoid_residuals, initial_guess, args=(xs, ys, zs),
+                    bounds=param_bounds, ftol=1e-3, xtol=1e-3, max_nfev=50, method='trf'
                 )
                 model_params = res.x
             except Exception:
                 continue
 
-            _, a, b, c, _, _, _, _, _ = model_params
-            if a > approx_radius * 5.0 or b > approx_radius * 5.0 or c > approx_radius * 5.0:
+            _, _, _, a, b, c, _, _, _ = model_params
+            if a > approx_radius * 3.0 or b > approx_radius * 3.0 or c > approx_radius * 3.0:
                 continue
 
-            errors = np.abs(_algebraic_ellipsoid_residuals(model_params, x, y, z))
+            # Проверяем ошибки удаления по геометрическому расстоянию до поверхности
+            errors = np.abs(_geometric_ellipsoid_residuals(model_params, x, y, z))
             current_inliers_mask = errors <= threshold
             inliers_count = np.sum(current_inliers_mask)
 
@@ -132,12 +137,14 @@ class CalibrationModel:
                 best_inliers_mask = current_inliers_mask
 
         if max_inliers_count < 9:
-            self._log("[Модель - RANSAC]: Консенсус не найден. Отмена фильтрации.")
+            self._log("[Модель - RANSAC]: Математический консенсус не найден. Порог зажат! Отмена фильтрации.")
             return np.ones(num_pts, dtype=bool)
 
-        self._log(f"[Модель - RANSAC]: Отсечено {num_pts - max_inliers_count} точек аномалий магнитной среды.")
+        self._log(
+            f"[Модель - RANSAC]: Экспертиза завершена. Отсечено {num_pts - max_inliers_count} изолированных точек-выбросов.")
         return best_inliers_mask
 
+# mag_calibration/models/calibration_model.py — Часть 3 из 4
     def _fit_geometric_gauss_newton(self, x, y, z, loss_type='linear', f_scale=0.1, tolerance=1e-12,
                                     max_iterations=5000):
         """Числовой нелинейный МНК Гаусса-Ньютона (через алгоритм TRF)."""
@@ -181,6 +188,7 @@ class CalibrationModel:
 
         return center, radii, rotation_matrix, rmse
 
+    # mag_calibration/models/calibration_model.py — Часть 4 из 4
     def run_pass1_ransac(self) -> dict:
         """ЭТАП 1: Выполнение RANSAC-экспертизы и разделение точек на чистые и аномалии."""
         ransac_iter = self.algo_settings.get("ransac_iterations", 800)
@@ -196,7 +204,8 @@ class CalibrationModel:
             self._log("[Модель - Ошибка]: Критически мало точек для расчета.")
             return {}
 
-        self._log(f"[Пасс 1]: Запуск RANSAC-экспертизы (входной массив: {total_points} точек)...")
+        self._log(
+            f"[Фильтрация] (входной массив: {total_points} точек; итерации: {ransac_iter}; порог: {ransac_th})...")
         self.clean_mask = self._fit_ransac_robust(x_raw, y_raw, z_raw, max_iter=ransac_iter, threshold=ransac_th)
 
         filtered_data = {
@@ -240,10 +249,11 @@ class CalibrationModel:
         radii_flat = np.abs(radii_f.ravel())
         r_mean = np.mean(radii_flat)
 
+        # ИСПРАВЛЕНО: Вместо встроенного max() применен векторный np.maximum() для защиты от деления на ноль
         scale_matrix_local = np.diag([
-            r_mean / max(radii_flat[0], 1e-6),
-            r_mean / max(radii_flat[1], 1e-6),
-            r_mean / max(radii_flat[2], 1e-6)
+            r_mean / np.maximum(radii_flat[0], 1e-6),
+            r_mean / np.maximum(radii_flat[1], 1e-6),
+            r_mean / np.maximum(radii_flat[2], 1e-6)
         ])
 
         scale_matrix_global = np.dot(rotation_f.T, np.dot(scale_matrix_local, rotation_f))
@@ -252,6 +262,7 @@ class CalibrationModel:
 
     def apply_calibration(self, raw_data_dict: dict, offsets: np.ndarray, coefficients: np.ndarray) -> dict:
         key_x, key_y, key_z = self.keys
+
         x_raw = np.array(raw_data_dict[key_x], dtype=float)
         y_raw = np.array(raw_data_dict[key_y], dtype=float)
         z_raw = np.array(raw_data_dict[key_z], dtype=float)
@@ -260,10 +271,26 @@ class CalibrationModel:
         centered_matrix = raw_matrix - offsets[:, np.newaxis]
         calibrated_matrix = np.dot(coefficients, centered_matrix)
 
+        x_cal = calibrated_matrix[0, :]
+        y_cal = calibrated_matrix[1, :]
+        z_cal = calibrated_matrix[2, :]
+
+        if hasattr(self, 'clean_mask') and self.clean_mask is not None:
+            mask = self.clean_mask
+        else:
+            mask = np.ones(len(x_raw), dtype=bool)
+
         return {
-            key_x: calibrated_matrix[0].tolist(),
-            key_y: calibrated_matrix[1].tolist(),
-            key_z: calibrated_matrix[2].tolist()
+            "inliers": {
+                key_x: x_cal[mask].tolist(),
+                key_y: y_cal[mask].tolist(),
+                key_z: z_cal[mask].tolist()
+            },
+            "outliers": {
+                key_x: x_cal[~mask].tolist(),
+                key_y: y_cal[~mask].tolist(),
+                key_z: z_cal[~mask].tolist()
+            }
         }
 
     def optimize_and_save_algorithm_settings(self):
@@ -272,3 +299,4 @@ class CalibrationModel:
 
     def load_algorithm_settings(self) -> bool:
         return True
+
