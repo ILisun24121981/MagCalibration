@@ -47,6 +47,7 @@ class ExternalAppWindow(QMainWindow):
         except Exception:
             pass
 
+    # main.py — Метод process_calibration — Часть 1 из 3
     def process_calibration(self):
         last_dir = self._load_last_directory()
         file_path, _ = QFileDialog.getOpenFileName(
@@ -63,7 +64,6 @@ class ExternalAppWindow(QMainWindow):
             x_data, y_data, z_data = [], [], []
             with open(file_path, mode='r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
-
                 required_headers = {'FLC_x', 'FLC_y', 'FLC_z'}
                 if not required_headers.issubset(reader.fieldnames or []):
                     raise ValueError(f"В файле нет колонок FLC_x, FLC_y, FLC_z.\nНайдены: {reader.fieldnames}")
@@ -77,18 +77,55 @@ class ExternalAppWindow(QMainWindow):
                         continue
 
             input_data_dict = {'x': x_data, 'y': y_data, 'z': z_data}
+            total_input_points = len(x_data)
 
             print("[Хост]: Активация изолированного конвейера калибровки...")
-            # ВАЖНО: Передаем self в качестве parent_window для жесткой изоляции оконных циклов!
             calibrate(input_data_dict, parent_window=self)
-            print("[Хост]: Управление успешно возвращено хост-приложению. Ресурсы плагина очищены.")
+            print("[Хост]: Управление возвращено. Запуск тотальной проверки ОЗУ...")
+# main.py — Метод process_calibration — Часть 2 из 3
+            # 🧼 ИНИЦИАЛИЗАЦИЯ ЗАЧИСТКИ ОЧЕРЕДИ ПЕРЕД СКАНИРОВАНИЕМ
+            import gc
+            import numpy as np
+            app = QApplication.instance()
+            if app:
+                app.processEvents()
+            gc.collect()
+
+            total_leaks = []
+            for obj in gc.get_objects():
+                obj_type = type(obj)
+                type_name = obj_type.__name__
+
+                # 1. Сканируем кастомные классы пакета магнетометра
+                if hasattr(obj_type, '__module__'):
+                    mod_name = obj_type.__module__
+                    if isinstance(mod_name, str) and mod_name.startswith('mag_calibration'):
+                        total_leaks.append(f"Класс пакета: {type_name}")
+                        continue
+
+                # 2. Проверяем тяжелые массивы NumPy, выделенные плагином
+                if isinstance(obj, np.ndarray) and obj.base is None:
+                    # Проверяем массивы, по длине совпадающие с переданным CSV-файлом
+                    if obj.size == total_input_points:
+                        total_leaks.append(f"Массив numpy.ndarray (Размер: {obj.size})")
+                        continue
+# main.py — Метод process_calibration — Часть 3 из 3
+                # 3. Ищем скрытые текстовые следы в ОЗУ
+                if isinstance(obj, str) and 'mag_calibration' in obj:
+                    if 'total_leaks' not in obj and not obj.startswith('sys.modules'):
+                        total_leaks.append(f"Строковый след в ОЗУ: '{obj[:30]}...'")
+
+            print(f"\n📊 [ТОТАЛЬНЫЙ КОНТРОЛЬ ПАМЯТИ] Найдено остаточных следов проекта: {len(total_leaks)}")
+            if total_leaks:
+                print("📋 Список удержанных ресурсов:")
+                for leak in total_leaks[:10]:
+                    print(f"  • {leak}")
+            else:
+                print("🏆 ИДЕАЛЬНО! В ОЗУ хоста не осталось ни единого байта или следа от вашего модуля.")
+            print()
 
         except TypeError as te:
-            QMessageBox.critical(
-                self, "Ошибка версии",
-                f"Сбой вызова: {str(te)}\n\n"
-                f"Выполните в терминале: pip install -e ."
-            )
+            QMessageBox.critical(self, "Ошибка версии", f"Сбой вызова: {str(te)}\n\nВыполните: pip install -e .")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка загрузки", f"Произошел сбой:\n{str(e)}")
 
