@@ -184,6 +184,34 @@ class CalibrationController(QObject):
         self.view.display_message(
             "Фильтрация завершена. Нажмите 'Продолжить' для перехода к расчету МНК." if is_ru else "Filtering completed. Click 'Continue' to proceed to GN-LSM.")
 
+    # controllers/calibration_controller.py — Дополнение в Часть 3
+    def show_settings_dialog(self) -> None:
+        """Отображает изолированное окно конфигурации параметров среды магнетометра."""
+        from mag_calibration.views.settings_dialog import SettingsDialog
+        current_data = {
+            "Language": self.settings_manager.current_lang,
+            "Calibration result folder": str(self.settings_manager.save_result_dir)
+        }
+
+        # ОПТИМИЗИРОВАНО: parent=None для защиты С++ от удержания хостом
+        dialog = SettingsDialog(current_settings=current_data, parent=None)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_settings = dialog.get_configured_settings()
+            raw_lang = new_settings["Language"].strip()
+
+            if raw_lang.startswith(("Rus", "rus")):
+                raw_lang = "Russian"
+            elif raw_lang.startswith(("Eng", "eng")):
+                raw_lang = "English"
+
+            self.settings_manager.current_lang = raw_lang
+            self.settings_manager.save_result_dir = Path(new_settings["Calibration result folder"])
+
+            # Сохраняем измененные параметры на жесткий диск
+            self.settings_manager.save_setting("Language", self.settings_manager.current_lang, parent=None)
+            self.settings_manager.save_setting("Calibration result folder",
+                                               str(self.settings_manager.save_result_dir), parent=None)
+
     # mag_calibration/controllers/calibration_controller.py — Часть 4 из 4
     def _on_continue_clicked(self):
         self.current_stage = 2
