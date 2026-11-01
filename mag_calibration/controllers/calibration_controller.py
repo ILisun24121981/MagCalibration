@@ -97,7 +97,7 @@ class CalibrationController(QObject):
 
         warn_dlg = CalibrationOverrideDialog(
             device_number=current_dev_num, result_path=self.settings_manager.calibration_file_path,
-            lang=self.settings_manager.current_lang, is_completed=is_completed, parent=self.view
+            lang=self.settings_manager.current_lang, is_completed=is_completed, parent=self._parent_window
         )
         if warn_dlg.exec() == QDialog.DialogCode.Accepted:
             if is_completed and "mag" in file_data:
