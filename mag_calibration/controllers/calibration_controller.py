@@ -99,12 +99,23 @@ class CalibrationController(QObject):
             device_number=current_dev_num, result_path=self.settings_manager.calibration_file_path,
             lang=self.settings_manager.current_lang, is_completed=is_completed, parent=self._parent_window
         )
-        if warn_dlg.exec() == QDialog.DialogCode.Accepted:
+
+        # Запускаем модальный диалог
+        result = warn_dlg.exec()
+
+        if result == QDialog.DialogCode.Accepted:
             if is_completed and "mag" in file_data:
                 del file_data["mag"]
                 self.session_manager.update_session_file(file_data, parent=self.view)
             return True
         else:
+            # ИСПРАВЛЕНО: Проверяем, как именно закрыли форму
+            if warn_dlg.is_closed_by_x:
+                print(
+                    "[Магнетометр] Предупреждение закрыто через 'X'/Esc. Прерывание работы модуля без сброса настроек.")
+                return False  # Управление переходит в finally-блок фасада для чистки ОЗУ
+
+            # Если осознанно нажали кнопку "Сменить файл калибровки"
             self.settings_manager.save_setting("Last Calibration File Path", "", parent=self.view)
             self.settings_manager.calibration_file_path = Path("")
             return self._run_interactive_file_selection()

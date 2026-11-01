@@ -41,6 +41,7 @@ class CalibrationOverrideDialog(QDialog):
 
         self.lp = self.loc.get(lang, self.loc["English"])
         self.init_ui(device_number, is_completed)
+        self.is_closed_by_x = True
 
     def init_ui(self, device_number: str, is_completed: bool):
         self.setWindowTitle(self.lp["title"])
@@ -111,8 +112,8 @@ class CalibrationOverrideDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-        self.btn_close.clicked.connect(self.accept)
-        self.btn_change.clicked.connect(self.reject)
+        self.btn_close.clicked.connect(self._handle_ok_click)
+        self.btn_change.clicked.connect(self._handle_change_click)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -133,3 +134,15 @@ class CalibrationOverrideDialog(QDialog):
                 subprocess.Popen(["open", folder_path])
             else:
                 subprocess.Popen(["xdg-open", folder_path])
+
+    def _handle_ok_click(self):
+        self.is_closed_by_x = False
+        self.accept()
+
+    def _handle_change_click(self):
+        self.is_closed_by_x = False
+        self.reject()
+
+    def closeEvent(self, event):
+        # Если нажали крестик, self.is_closed_by_x останется True
+        super().closeEvent(event)
