@@ -311,6 +311,12 @@ class CalibrationController(QObject):
                 '%Y_%m_%d_%H_%M')) if file_data else "now"
 
             if self.view: self.view.accept()
+
+            # ВНЕДРЕНО: Затираем путь к файлу сессии в AppSettings на диске и в ОЗУ, как в проекте acc
+            print("🧹 [Магнетометр] Калибровка успешно сохранена. Путь в AppSettings занулен.")
+            self.settings_manager.save_setting("Last Calibration File Path", "", parent=self._parent_window)
+            self.settings_manager.calibration_file_path = Path("")
+
             from mag_calibration.views.save_success_dialog import SaveSuccessDialog
             success_dlg = SaveSuccessDialog(filename=f"{device_number}_calibration_{current_timestamp}.json",
                                             folder_path=str(self.settings_manager.save_result_dir),

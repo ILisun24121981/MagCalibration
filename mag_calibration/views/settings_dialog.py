@@ -1,4 +1,3 @@
-# views/settings_dialog.py — Часть 1 из 3 (ИСПРАВЛЕННАЯ)
 import os
 from typing import Dict, Any
 from PyQt6 import QtCore
@@ -7,8 +6,8 @@ from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox
 
 
 class SettingsDialog(QDialog):
-    """Окно конфигурации параметров среды магнетометра (Язык, Путь сохранения).
-    Полностью повторяет визуальный стиль и логику динамической смены языка AccCalibration.
+    """Окно конфигурации параметров среды акселерометра (Язык, Путь сохранения).
+    Синхронизировано по стилю и логике с модулем магнетометра.
     """
 
     def __init__(self, current_settings: Dict[str, Any], parent=None):
@@ -39,7 +38,7 @@ class SettingsDialog(QDialog):
         self.resize(520, 180)
         self.setModal(True)
         layout = QVBoxLayout(self)
-# views/settings_dialog.py — Часть 2 из 3 (ИСПРАВЛЕННАЯ)
+
         # 1. Выбор Языка
         self.lbl_lang = QLabel()
         layout.addWidget(self.lbl_lang)
@@ -63,7 +62,6 @@ class SettingsDialog(QDialog):
         layout.addLayout(path_layout)
 
         layout.addStretch()
-
         # Кнопки Управления
         btn_layout = QHBoxLayout()
         self.btn_save = QPushButton()
@@ -83,7 +81,7 @@ class SettingsDialog(QDialog):
         screen = app.primaryScreen().geometry() if app else None
         if screen:
             self.move((screen.width() - self.width()) // 2, (screen.height() - self.height()) // 2)
-# views/settings_dialog.py — Часть 3 из 3 (ИСПРАВЛЕННАЯ)
+
     def _retranslate_ui(self) -> None:
         lp = self.loc.get(self.lang, self.loc["English"])
         self.setWindowTitle(lp["title"])
@@ -107,7 +105,8 @@ class SettingsDialog(QDialog):
     def _handle_save(self) -> None:
         """Слот сохранения данных ПЕРЕД деструкцией C++ виджетов."""
         self.user_decision = "accept"
-        # Безопасно парсим и фиксируем значения в Python-памяти до закрытия окна
+
+        # ОПТИМИЗИРОВАНО: Сохраняем только чистые инфраструктурные параметры среды среды
         self.final_configured_data = {
             "Language": self.combo_lang.currentText(),
             "Calibration result folder": os.path.abspath(self.le_path.text().strip())
