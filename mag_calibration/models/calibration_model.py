@@ -207,17 +207,17 @@ class CalibrationModel:
             f"[Filtering] (input data: {total_points} points; iterations: {ransac_iter}; threshold: {ransac_th})...")
         self.clean_mask = self._fit_ransac_robust(x_raw, y_raw, z_raw, max_iter=ransac_iter, threshold=ransac_th)
 
-        # ИСПРАВЛЕНО: Убрано двойное отрицание на оси Y, теперь размеры массивов строго совпадают
+        # ОПТИМИЗИРОВАНО: Возвращаем чистые срезы NumPy-массивов без тяжелого копирования в .tolist()
         filtered_data = {
             "inliers": {
-                key_x: x_raw[self.clean_mask].tolist(),
-                key_y: y_raw[self.clean_mask].tolist(),
-                key_z: z_raw[self.clean_mask].tolist()
+                key_x: x_raw[self.clean_mask],
+                key_y: y_raw[self.clean_mask],
+                key_z: z_raw[self.clean_mask]
             },
             "outliers": {
-                key_x: x_raw[~self.clean_mask].tolist(),
-                key_y: y_raw[~self.clean_mask].tolist(),
-                key_z: z_raw[~self.clean_mask].tolist()
+                key_x: x_raw[~self.clean_mask],
+                key_y: y_raw[~self.clean_mask],
+                key_z: z_raw[~self.clean_mask]
             }
         }
         return filtered_data
@@ -277,16 +277,17 @@ class CalibrationModel:
         else:
             mask = np.ones(len(x_raw), dtype=bool)
 
+        # ОПТИМИЗИРОВАНО: Передача во View идет через быстрые NumPy-массивы
         return {
             "inliers": {
-                key_x: x_cal[mask].tolist(),
-                key_y: y_cal[mask].tolist(),
-                key_z: z_cal[mask].tolist()
+                key_x: x_cal[mask],
+                key_y: y_cal[mask],
+                key_z: z_cal[mask]
             },
             "outliers": {
-                key_x: x_cal[~mask].tolist(),
-                key_y: y_cal[~mask].tolist(),
-                key_z: z_cal[~mask].tolist()
+                key_x: x_cal[~mask],
+                key_y: y_cal[~mask],
+                key_z: z_cal[~mask]
             }
         }
 

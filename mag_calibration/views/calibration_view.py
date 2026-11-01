@@ -451,13 +451,18 @@ class CalibrationView(QDialog):
             if isinstance(item, (gl.GLScatterPlotItem, gl.GLGridItem, gl.GLTextItem, gl.GLLinePlotItem)):
                 self.gl_widget.removeItem(item)
 
-        raw_pts = np.vstack([raw_data['x'], raw_data['y'], raw_data['z']]).T
+        # ОПТИМИЗИРОВАНО: Безопасное приведение к np.array на случай, если на входе будут разные типы данных
+        x_r = np.array(raw_data['x'], dtype=float)
+        y_r = np.array(raw_data['y'], dtype=float)
+        z_r = np.array(raw_data['z'], dtype=float)
+
+        raw_pts = np.vstack([x_r, y_r, z_r]).T
         self.scale_factor = 15.0 / max(np.max(np.abs(raw_pts)), 1.0)
         scaled_raw = raw_pts * self.scale_factor
 
-        mn_x, mx_x = np.min(raw_data['x']), np.max(raw_data['x'])
-        mn_y, mx_y = np.min(raw_data['y']), np.max(raw_data['y'])
-        mn_z, mx_z = np.min(raw_data['z']), np.max(raw_data['z'])
+        mn_x, mx_x = np.min(x_r), np.max(x_r)
+        mn_y, mx_y = np.min(y_r), np.max(y_r)
+        mn_z, mx_z = np.min(z_r), np.max(z_r)
         span = max(mx_x - mn_x, mx_y - mn_y, mx_z - mn_z)
         grid_step = float((1.0 if (span / 6.0) / (10 ** math.floor(math.log10(span / 6.0))) < 1.5 else (
             2.0 if (span / 6.0) / (10 ** math.floor(math.log10(span / 6.0))) < 3.5 else (
@@ -467,12 +472,18 @@ class CalibrationView(QDialog):
         grid_spacing_vector = QVector3D(s_step, s_step, s_step)
 
         if calibrated_data and ("inliers" in calibrated_data):
-            in_pts = np.vstack(
-                [calibrated_data['inliers']['x'], calibrated_data['inliers']['y'], calibrated_data['inliers']['z']]).T
-            out_pts = np.vstack([calibrated_data['outliers']['x'], calibrated_data['outliers']['y'],
-                                 calibrated_data['outliers']['z']]).T
-            all_displayed_pts = np.vstack([in_pts, out_pts]) * self.scale_factor if len(
-                out_pts) > 0 else in_pts * self.scale_factor
+            in_x = np.array(calibrated_data['inliers']['x'], dtype=float)
+            in_y = np.array(calibrated_data['inliers']['y'], dtype=float)
+            in_z = np.array(calibrated_data['inliers']['z'], dtype=float)
+            in_pts = np.vstack([in_x, in_y, in_z]).T
+
+            out_x = np.array(calibrated_data['outliers']['x'], dtype=float)
+            out_y = np.array(calibrated_data['outliers']['y'], dtype=float)
+            out_z = np.array(calibrated_data['outliers']['z'], dtype=float)
+            out_pts = np.vstack([out_x, out_y, out_z]).T
+
+            all_displayed_pts = np.vstack([in_pts, out_pts]) if len(out_pts) > 0 else in_pts
+            all_displayed_pts = all_displayed_pts * self.scale_factor
             center = np.mean(in_pts * self.scale_factor, axis=0) if len(in_pts) > 0 else np.zeros(3)
         else:
             in_pts, out_pts = None, None
@@ -482,7 +493,6 @@ class CalibrationView(QDialog):
         max_coord_val = np.max(np.abs(all_displayed_pts)) if len(all_displayed_pts) > 0 else 15.0
         axis_len = float(max_coord_val * 1.15)
 
-        # Выравнивание линий сетки: делаем количество делений нечетным
         grid_size = int(math.ceil(axis_len * 2 / s_step))
         if grid_size % 2 == 0: grid_size += 1
         total_size = grid_size * s_step
@@ -529,7 +539,6 @@ class CalibrationView(QDialog):
             self.scatter_raw = gl.GLScatterPlotItem(pos=scaled_raw, color=c_raw, size=3, pxMode=True);
             self.gl_widget.addItem(self.scatter_raw)
 
-        # ИСПРАВЛЕНО: Безопасное покомпонентное наведение камеры на центр
         if len(center) >= 3:
             self.gl_widget.opts['center'] = QVector3D(float(center[0]), float(center[1]), float(center[2]))
         else:
